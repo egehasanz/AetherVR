@@ -80,14 +80,15 @@ def generate_pkce():
     return code_verifier, code_challenge
 
 class VRControlView(discord.ui.View):
-    def __init__(self, user_id):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.user_id = user_id
 
-    @discord.ui.button(label="🥽 VR Bağlan / Güncelle", style=discord.ButtonStyle.success, custom_id="btn_vr_baglan")
+    @discord.ui.button(label="🥽 VR Bağlan / Güncelle", style=discord.ButtonStyle.success, custom_id="btn_vr_baglan_rol")
     async def vr_baglan_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Bu buton sadece komutu yazan kullanıcıya özeldir!", ephemeral=True)
+        # Butona basan kullanıcının rol kontrolü
+        user_roles = [role.id for role in interaction.user.roles]
+        if REQUIRED_ROLE_ID not in user_roles:
+            await interaction.response.send_message("❌ Bu işlemi gerçekleştirmek için gereken özel role sahip değilsin.", ephemeral=True)
             return
 
         code_verifier, code_challenge = generate_pkce()
@@ -178,10 +179,12 @@ class VRControlView(discord.ui.View):
                 pass
             log_yaz(f"Süre aşımı veya hata: {str(e)}", interaction.user.id)
 
-    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.danger, custom_id="btn_vr_kes")
-    async def vr_kes_btn(self, interaction: discord.Interaction, custom_id: discord.ui.Button = None):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Bu buton sadece komutu yazan kullanıcıya özeldir!", ephemeral=True)
+    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.danger, custom_id="btn_vr_kes_rol")
+    async def vr_kes_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Bağlantı keserken de rol kontrolü isteğe bağlı yapılabilir ama genelde sadece db'de var mı diye bakılır
+        user_roles = [role.id for role in interaction.user.roles]
+        if REQUIRED_ROLE_ID not in user_roles:
+            await interaction.response.send_message("❌ Bu işlemi gerçekleştirmek için gereken özel role sahip değilsin.", ephemeral=True)
             return
 
         db = load_db()
@@ -210,10 +213,12 @@ class VRControlView(discord.ui.View):
 async def on_ready():
     print(f"Bot aktif: {bot.user.name}")
     ekrani_gizle()
+    bot.add_view(VRControlView())
     log_yaz("Bot başarıyla başlatıldı ve aktif hale geldi.")
 
 @bot.command(name="vr")
 async def vr_panel(ctx):
+    # Komutu yazarken de rol kontrolü
     user_roles = [role.id for role in ctx.author.roles]
     if REQUIRED_ROLE_ID not in user_roles:
         embed = discord.Embed(
@@ -232,9 +237,9 @@ async def vr_panel(ctx):
     
     embed.set_footer(text="AetherVR Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
     
-    view = VRControlView(ctx.author.id)
+    view = VRControlView()
     await ctx.send(embed=embed, view=view)
-    log_yaz("Kullanıcı için VR yönetim paneli açıldı.", ctx.author.id)
+    log_yaz("Kullanıcı için genel VR yönetim paneli açıldı.", ctx.author.id)
 
 @bot.command(name="status")
 async def bot_status(ctx):

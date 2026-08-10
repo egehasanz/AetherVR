@@ -10,7 +10,6 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 # --- AYARLAR ---
-# Token'ı artık Railway'deki Variables sekmesinden çekecek
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 CLIENT_ID = "1417273808645259344"
 GUILD_ID = 1515086899872796822     # Senin sunucu ID'n
@@ -219,7 +218,7 @@ async def on_ready():
     channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
     if channel:
         try:
-            await channel.send("Bot redeploy oldu VRlarınızı tekrar etkinleştirin.")
+            await channel.send("bot redeploy oldu vrlarınızı tekrar etkinleştirin")
             add_log("DUYURU", f"Redeploy mesajı {ANNOUNCEMENT_CHANNEL_ID} kanalına gönderildi.")
         except Exception as e:
             add_log("HATA", f"Duyuru mesajı gönderilemedi: {e}")
@@ -277,8 +276,7 @@ async def bot_vr_status_loop():
     activity = discord.Activity(type=discord.ActivityType.playing, name=chosen_activity_name)
     await bot.change_presence(activity=activity)
 
-# Token kontrolü ekleyelim ki variable girilmediğinde ne olduğunu anla
 if not BOT_TOKEN:
-    print("HATA: BOT_TOKEN çevre değişkeni bulunamadı! Lütfen Railway paneline ekle.")
+    print("HATA: BOT_TOKEN çevre değişkeni bulunamadı!")
 else:
     bot.run(BOT_TOKEN)

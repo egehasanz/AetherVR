@@ -8,17 +8,17 @@ import base64
 import random
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
+import psutil
 
 # --- AYARLAR ---
-BOT_TOKEN = os.getenv("BOT_TOKEN") 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CLIENT_ID = "1417273808645259344"
-GUILD_ID = 1515086899872796822     # Senin sunucu ID'n
-BOOST_ROLE_ID = 1536136751565906013 # Boost rolü ID'n
-ANNOUNCEMENT_CHANNEL_ID = 1536152946394529802 # Redeploy duyuru kanalı ID'si
+GUILD_ID = 1515086899872796822
+BOOST_ROLE_ID = 1536136751565906013
 DB_FILE = "veritabani.json"
 LOG_FILE = "log.json"
 
-# --- BOTUN DURUMUNDA YAZACAK ÖZEL VR SEÇENEKLERİ ---
+# --- ÖZEL VR DURUM SEÇENEKLERİ ---
 VR_ACTIVITIES = [
     "Meta Quest VR ile oynuyor",
     "Quest OS Ana Menüde",
@@ -123,13 +123,12 @@ class VRModal(discord.ui.Modal, title="Meta / Oculus Bağlantısı"):
             db = load_db()
             db[str(interaction.user.id)] = {
                 "access_token": access_token,
-                "refresh_token": refresh_token,
-                "status_type": "dnd"
+                "refresh_token": refresh_token
             }
             save_db(db)
             
             add_log("BASARILI", f"Kullanıcı VR hesabını bağladı: {interaction.user} ({interaction.user.id})")
-            await interaction.followup.send("✅ **İşlem Başarılı!** Sistem başarıyla onaylandı.", ephemeral=True)
+            await interaction.followup.send("✅ **İşlem Başarılı!** VR durumun profilinde aktif edildi.", ephemeral=True)
         else:
             add_log("API_HATA", f"Discord/Meta token alınamadı. Kod: {response.status_code}, Kullanıcı: {interaction.user}")
             await interaction.followup.send("❌ Discord/Meta tarafında yetki alınamadı. Linkin süresi dolmuş olabilir, tekrar dene.", ephemeral=True)
@@ -162,24 +161,25 @@ class VRView(discord.ui.View):
 
         embed = discord.Embed(
             title="🥽 Meta Quest Entegrasyon Adımları",
-            description="Sistemi onaylamak için aşağıdaki adımları takip et:",
+            description="Profilinde **Meta Quest** durumunu aktif etmek için aşağıdaki 3 basit adımı takip et:",
             color=discord.Color.from_rgb(88, 101, 242)
         )
         embed.add_field(
             name="1️⃣ Yetkilendirme Sayfasına Git",
-            value="Aşağıdaki **🌐 Meta ile Giriş Yap** butonuna tıklayarak onay ver.",
+            value="Aşağıdaki **🌐 Meta ile Giriş Yap** butonuna tıklayarak tarayıcından onay ver.",
             inline=False
         )
         embed.add_field(
             name="2️⃣ Yönlendirme Linkini Kopyala",
-            value="Yönlendirildiğin sayfanın adres çubuğundaki (`https://oculus.com/...`) adresi **tam olarak** kopyala.",
+            value="Giriş yaptıktan sonra yönlendirildiğin sayfanın adres çubuğundaki (`https://oculus.com/...`) adresi **tam olarak** kopyala.",
             inline=False
         )
         embed.add_field(
             name="3️⃣ Linki Sisteme İlet",
-            value="**📝 Kopyaladığım Linki Gir** butonuna tıklayıp açılan kutucuğa yapıştır.",
+            value="**📝 Kopyaladığım Linki Gir** butonuna tıklayıp açılan kutucuğa kopyaladığın adresi yapıştır.",
             inline=False
         )
+        embed.set_footer(text="🔒 Güvenli OAuth2 Altyapısı • Verileriniz şifrelenerek korunmaktadır.")
 
         class ActionView(discord.ui.View):
             def __init__(self):
@@ -199,42 +199,35 @@ class VRView(discord.ui.View):
         if user_id_str in db:
             del db[user_id_str]
             save_db(db)
-            add_log("KOPARMA", f"Kullanıcı bağlantıyı kesti: {interaction.user} ({interaction.user.id})")
-            await interaction.response.send_message("🔌 Kayıt sisteminden kaldırıldı.", ephemeral=True)
+            add_log("KOPARMA", f"Kullanıcı VR bağlantısını kesti: {interaction.user} ({interaction.user.id})")
+            await interaction.response.send_message("🔌 VR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Zaten aktif bir kaydın bulunmuyor.", ephemeral=True)
+            await interaction.response.send_message("❌ Zaten aktif bir VR bağlantın bulunmuyor.", ephemeral=True)
 
 @bot.event
 async def on_ready():
     print(f"Bot aktif: {bot.user.name}")
     add_log("BILGI", f"Bot aktifleşti: {bot.user.name}")
     bot.add_view(VRView())
-    
-    # VR durum döngüsünü başlat
-    if not bot_vr_status_loop.is_running():
-        bot_vr_status_loop.start()
-
-    # Redeploy duyuru mesajını ilgili kanala gönder
-    channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
-    if channel:
-        try:
-            await channel.send("bot redeploy oldu vrlarınızı tekrar etkinleştirin")
-            add_log("DUYURU", f"Redeploy mesajı {ANNOUNCEMENT_CHANNEL_ID} kanalına gönderildi.")
-        except Exception as e:
-            add_log("HATA", f"Duyuru mesajı gönderilemedi: {e}")
+    vr_status_loop.start()
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def kurulumpanel(ctx):
     embed = discord.Embed(
-        title="🥽 Meta Quest Entegrasyon Merkezi",
+        title="🥽 Meta Quest Profil Entegrasyon Merkezi",
         description=(
-            "Sunucumuza **Boost** basarak sisteme dahil olabilirsin!\n\n"
+            "Sunucumuza **Boost** basarak profilinde **Meta Quest (VR)** aktivitesini aktif edebilirsin!\n\n"
+            "✨ **Sistem Özellikleri:**\n"
+            "• Profilinde otomatik değişen **Meta Quest** durumları görünür.\n"
+            "• Hesabın kesintisiz olarak 7/24 arka planda güncellenir.\n"
+            "• İstediğin zaman tek tıkla bağlantını kesebilirsin.\n\n"
             "🚀 **Nasıl Aktif Edilir?**\n"
             "Aşağıdaki **🔗 VR Hesabını Bağla** butonuna tıklayarak adımları takip etmeniz yeterlidir."
         ),
         color=discord.Color.from_rgb(88, 101, 242)
     )
+    embed.set_footer(text="Meta Quest Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
     await ctx.send(embed=embed, view=VRView())
     await ctx.message.delete()
     add_log("PANEL", f"Kurulum paneli oluşturuldu: {ctx.channel.name} ({ctx.author})")
@@ -256,27 +249,86 @@ async def aktifler(ctx):
             aktif_kullanicilar.append(f"• {member.mention} (`{member.name}`)")
 
     embed = discord.Embed(
-        title="🥽 Sisteme Kayıtlı Kullanıcılar",
+        title="🥽 Aktif VR Entegrasyonu Bulunan Kullanıcılar",
         color=discord.Color.green()
     )
 
     if aktif_kullanicilar:
         embed.description = "\n".join(aktif_kullanicilar)
-        embed.set_footer(text=f"Toplam Kayıtlı: {len(aktif_kullanicilar)}")
+        embed.set_footer(text=f"Toplam Aktif Kullanıcı: {len(aktif_kullanicilar)}")
     else:
-        embed.description = "Şu anda sistemde kayıtlı kimse yok."
+        embed.description = "Şu anda sistemde bağlı aktif bir kullanıcı bulunmuyor."
 
     await ctx.send(embed=embed)
     await ctx.message.delete()
 
-# Botun kendi profilinde VR durumlarını döndüren döngü
-@tasks.loop(seconds=45)
-async def bot_vr_status_loop():
-    chosen_activity_name = random.choice(VR_ACTIVITIES)
-    activity = discord.Activity(type=discord.ActivityType.playing, name=chosen_activity_name)
-    await bot.change_presence(activity=activity)
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def status(ctx):
+    process = psutil.Process(os.getpid())
+    ram_usage = process.memory_info().rss / (1024 * 1024)
+    system_ram = psutil.virtual_memory()
+    cpu_usage = process.cpu_percent(interval=0.1)
 
-if not BOT_TOKEN:
-    print("HATA: BOT_TOKEN çevre değişkeni bulunamadı!")
-else:
-    bot.run(BOT_TOKEN)
+    embed = discord.Embed(
+        title="📊 Bot Sistem Durumu (Status)",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="💻 Bot RAM Kullanımı", value=f"`{ram_usage:.2f} MB`", inline=True)
+    embed.add_field(name="⚙️ Bot CPU Kullanımı", value=f"`%{cpu_usage}`", inline=True)
+    embed.add_field(name="🖥️ Toplam Sunucu RAM", value=f"`%{system_ram.percent}` dolu ({system_ram.used // (1024*1024)}MB / {system_ram.total // (1024*1024)}MB)", inline=False)
+    embed.set_footer(text="Railway / Sunucu Altyapısı")
+    
+    await ctx.send(embed=embed)
+    await ctx.message.delete()
+
+@tasks.loop(seconds=55)
+async def vr_status_loop():
+    db = load_db()
+    if not db:
+        return
+    
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    updated = False
+    for discord_id, user_data in list(db.items()):
+        member = guild.get_member(int(discord_id))
+        
+        if not member or not any(role.id == BOOST_ROLE_ID for role in member.roles):
+            del db[discord_id]
+            updated = True
+            add_log("SILINME", f"Kullanıcı sunucudan çıktı veya boost'u bitti, veritabanından silindi: {discord_id}")
+            continue
+
+        chosen_activity_name = random.choice(VR_ACTIVITIES)
+
+        activity = {
+            "application_id": CLIENT_ID,
+            "name": chosen_activity_name,
+            "type": 0,
+            "platform": "meta_quest"
+        }
+
+        try:
+            response = requests.post(
+                "https://discord.com/api/v10/users/@me/headless-sessions",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {user_data['access_token']}"
+                },
+                json={"activities": [activity]},
+                timeout=10
+            )
+            if response.status_code == 401:
+                del db[discord_id]
+                updated = True
+                add_log("TOKEN_GECERSIZ", f"Token süresi dolmuş, kullanıcı silindi: {discord_id}")
+        except Exception as e:
+            pass
+
+    if updated:
+        save_db(db)
+
+bot.run(BOT_TOKEN)

@@ -132,7 +132,7 @@ class VRView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔗 VR Hesabını Bağla", style=discord.ButtonStyle.green, custom_id="vr_baglan_btn")
+    @discord.ui.button(label="🔗 VR Hesabını Bağla", style=discord.ButtonStyle.green, custom_id="aethervr_baglan_btn_v3")
     async def baglan_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = bot.get_guild(GUILD_ID)
         member = guild.get_member(interaction.user.id)
@@ -181,23 +181,40 @@ class VRView(discord.ui.View):
                 super().__init__(timeout=180)
                 self.add_item(discord.ui.Button(label="🌐 Meta ile Giriş Yap", style=discord.ButtonStyle.link, url=auth_url))
 
-            @discord.ui.button(label="📝 Kopyaladığım Linki Gir", style=discord.ButtonStyle.primary, custom_id="modal_trigger_btn")
+            @discord.ui.button(label="📝 Kopyaladığım Linki Gir", style=discord.ButtonStyle.primary, custom_id="modal_trigger_btn_v3")
             async def open_modal(self, inner_interaction: discord.Interaction, inner_button: discord.ui.Button):
                 await inner_interaction.response.send_modal(VRModal(VERIFIER_STORE[inner_interaction.user.id]))
 
         await interaction.response.send_message(embed=embed, view=ActionView(), ephemeral=True)
 
-    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.red, custom_id="vr_kopar_btn")
+    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.red, custom_id="aethervr_kopar_btn_v3")
     async def kopar_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True, ephemeral=True)
         db = load_db()
         user_id_str = str(interaction.user.id)
+        
         if user_id_str in db:
+            access_token = db[user_id_str].get("access_token")
+            # Bağlantı koptuğu an Discord'a BOŞ aktivite göndererek rozeti anında siliyoruz
+            try:
+                requests.post(
+                    "https://discord.com/api/v10/users/@me/headless-sessions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {access_token}"
+                    },
+                    json={"activities": []},
+                    timeout=5
+                )
+            except:
+                pass
+            
             del db[user_id_str]
             save_db(db)
             add_log("KOPARMA", f"Kullanıcı VR bağlantısını kesti: {interaction.user} ({interaction.user.id})")
-            await interaction.response.send_message("🔌 AetherVR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
+            await interaction.followup.send("🔌 AetherVR entegrasyonu hesabından kaldırıldı ve durumun temizlendi.", ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Zaten aktif bir bağlantın bulunmuyor.", ephemeral=True)
+            await interaction.followup.send("❌ Zaten aktif bir bağlantın bulunmuyor.", ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -277,6 +294,13 @@ async def status(ctx):
     await ctx.send(embed=embed)
     await ctx.message.delete()
 
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def dbreset(ctx):
+    save_db({})
+    await ctx.send("✅ Veritabanı başarıyla sıfırlandı!", delete_after=5)
+    await ctx.message.delete()
+
 @tasks.loop(seconds=55)
 async def vr_status_loop():
     db = load_db()
@@ -292,24 +316,34 @@ async def vr_status_loop():
         member = guild.get_member(int(discord_id))
         
         if not member or not any(role.id == BOOST_ROLE_ID for role in member.roles):
+            # Yetkisi biten veya çıkan kullanıcıdan aktiviteyi temizle
+            try:
+                requests.post(
+                    "https://discord.com/api/v10/users/@me/headless-sessions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {user_data['access_token']}"
+                    },
+                    json={"activities": []},
+                    timeout=5
+                )
+            except:
+                pass
+            
             del db[discord_id]
             updated = True
             add_log("SILINME", f"Kullanıcı sunucudan çıktı veya boost'u bitti, veritabanından silindi: {discord_id}")
             continue
 
-        # Eğer kullanıcının daha önceden kayıtlı bir başlangıç zamanı yoksa bugünkü anı ekle
         start_time = user_data.get("start_time", int(time.time()))
 
-        # Aktiviteyi Sabitliyoruz
         activity = {
             "application_id": CLIENT_ID,
             "name": "discord.gg/allahinaslanlari",
             "type": 0,
             "timestamps": {
                 "start": start_time
-            },
-            # Artık platform: "meta_quest" yok, bu sayede logoyu Developer Portal'daki belirler.
-            # Eğer yine de Meta logosu çıkarsa, Client ID'yi değiştirip yeni bir uygulama açman gerekir.
+            }
         }
 
         try:

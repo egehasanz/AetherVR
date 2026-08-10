@@ -9,14 +9,42 @@ import random
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import psutil
+import psycopg2
+from urllib.parse import urlparse
 
 # --- AYARLAR ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 CLIENT_ID = "1417273808645259344"
 GUILD_ID = 1515086899872796822
 BOOST_ROLE_ID = 1536136751565906013
-DB_FILE = "veritabani.json"
 LOG_FILE = "log.json"
+
+# --- POSTGRESQL VERİTABANI BAĞLANTISI ---
+def get_db_connection():
+    parsed_url = urlparse(DATABASE_URL)
+    conn = psycopg2.connect(
+        database=parsed_url.path[1:],
+        user=parsed_url.username,
+        password=parsed_url.password,
+        host=parsed_url.hostname,
+        port=parsed_url.port
+    )
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS vr_users (
+            discord_id TEXT PRIMARY KEY,
+            access_token TEXT,
+            refresh_token TEXT
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # --- ÖZEL VR DURUM SEÇENEKLERİ ---
 VR_ACTIVITIES = [
@@ -45,20 +73,6 @@ def add_log(event_type, message):
         
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
-
-# --- JSON VERİTABANI YÖNETİCİSİ ---
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -117,24 +131,29 @@ class VRModal(discord.ui.Modal, title="Meta / Oculus Bağlantısı"):
             access_token = token_data["access_token"]
             refresh_token = token_data.get("refresh_token", "")
             
-            db = load_db()
-            db[str(interaction.user.id)] = {
-                "access_token": access_token,
-                "refresh_token": refresh_token
-            }
-            save_db(db)
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO vr_users (discord_id, access_token, refresh_token)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (discord_id) 
+                DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token
+            """, (str(interaction.user.id), access_token, refresh_token))
+            conn.commit()
+            cur.close()
+            conn.close()
             
             add_log("BASARILI", f"Kullanıcı VR hesabını bağladı: {interaction.user} ({interaction.user.id})")
             await interaction.followup.send("✅ **İşlem Başarılı!** VR durumun profilinde aktif edildi.", ephemeral=True)
         else:
-            add_log("API_HATA", f"Discord/Meta token alınamadı. Kod: {response.status_code}, Kullanıcı: {interaction.user}")
-            await interaction.followup.send("❌ Discord/Meta tarafında yetki alınamadı. Linkin süresi dolmuş olabilir, tekrar dene.", ephemeral=True)
+            add_log("API_HATA", f"Discord/Meta token alınamadı. Kod: {response.status_code}, Yanıt: {response.text}, Kullanıcı: {interaction.user}")
+            await interaction.followup.send(f"❌ Discord/Meta tarafında yetki alınamadı (Kod: {response.status_code}). Linkin süresi dolmuş olabilir.", ephemeral=True)
 
 class VRView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔗 VR Hesabını Bağla", style=discord.ButtonStyle.green, custom_id="vr_baglan_btn")
+    @discord.ui.button(label="🔗 VR Hesabını Bağla", style=discord.ButtonStyle.green, custom_id="vr_pg_baglan_btn")
     async def baglan_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = bot.get_guild(GUILD_ID)
         member = guild.get_member(interaction.user.id)
@@ -176,26 +195,30 @@ class VRView(discord.ui.View):
             value="**📝 Kopyaladığım Linki Gir** butonuna tıklayıp açılan kutucuğa kopyaladığın adresi yapıştır.",
             inline=False
         )
-        embed.set_footer(text="🔒 Güvenli OAuth2 Altyapısı • Verileriniz şifrelenerek korunmaktadır.")
+        embed.set_footer(text="🔒 Güvenli PostgreSQL Altyapısı • Verileriniz güvende.")
 
         class ActionView(discord.ui.View):
             def __init__(self):
                 super().__init__(timeout=180)
                 self.add_item(discord.ui.Button(label="🌐 Meta ile Giriş Yap", style=discord.ButtonStyle.link, url=auth_url))
 
-            @discord.ui.button(label="📝 Kopyaladığım Linki Gir", style=discord.ButtonStyle.primary, custom_id="modal_trigger_btn")
+            @discord.ui.button(label="📝 Kopyaladığım Linki Gir", style=discord.ButtonStyle.primary, custom_id="vr_pg_modal_btn")
             async def open_modal(self, inner_interaction: discord.Interaction, inner_button: discord.ui.Button):
                 await inner_interaction.response.send_modal(VRModal(VERIFIER_STORE[inner_interaction.user.id]))
 
         await interaction.response.send_message(embed=embed, view=ActionView(), ephemeral=True)
 
-    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.red, custom_id="vr_kopar_btn")
+    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.red, custom_id="vr_pg_kopar_btn")
     async def kopar_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        db = load_db()
-        user_id_str = str(interaction.user.id)
-        if user_id_str in db:
-            del db[user_id_str]
-            save_db(db)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM vr_users WHERE discord_id = %s", (str(interaction.user.id),))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if deleted > 0:
             add_log("KOPARMA", f"Kullanıcı VR bağlantısını kesti: {interaction.user} ({interaction.user.id})")
             await interaction.response.send_message("🔌 VR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
         else:
@@ -203,7 +226,8 @@ class VRView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    print(f"Bot aktif: {bot.user.name}")
+    init_db()
+    print(f"Bot aktif ve PostgreSQL bağlantısı hazır: {bot.user.name}")
     add_log("BILGI", f"Bot aktifleşti: {bot.user.name}")
     bot.add_view(VRView())
     vr_status_loop.start()
@@ -217,14 +241,14 @@ async def kurulumpanel(ctx):
             "Sunucumuza **Boost** basarak profilinde **Meta Quest (VR)** aktivitesini aktif edebilirsin!\n\n"
             "✨ **Sistem Özellikleri:**\n"
             "• Profilinde otomatik değişen **Meta Quest** durumları görünür.\n"
-            "• Hesabın kesintisiz olarak 7/24 arka planda güncellenir.\n"
+            "• PostgreSQL güvencesiyle verileriniz kalıcı olarak saklanır.\n"
             "• İstediğin zaman tek tıkla bağlantını kesebilirsin.\n\n"
             "🚀 **Nasıl Aktif Edilir?**\n"
             "Aşağıdaki **🔗 VR Hesabını Bağla** butonuna tıklayarak adımları takip etmeniz yeterlidir."
         ),
         color=discord.Color.from_rgb(88, 101, 242)
     )
-    embed.set_footer(text="Meta Quest Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
+    embed.set_footer(text="Meta Quest Entegrasyon Altyapısı • PostgreSQL")
     await ctx.send(embed=embed, view=VRView())
     await ctx.message.delete()
     add_log("PANEL", f"Kurulum paneli oluşturuldu: {ctx.channel.name} ({ctx.author})")
@@ -232,16 +256,21 @@ async def kurulumpanel(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def aktifler(ctx):
-    db = load_db()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT discord_id FROM vr_users")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
     guild = bot.get_guild(GUILD_ID)
-    
     if not guild:
         await ctx.send("❌ Sunucu bulunamadı.", delete_after=10)
         return
 
     aktif_kullanicilar = []
-    for discord_id in db.keys():
-        member = guild.get_member(int(discord_id))
+    for row in rows:
+        member = guild.get_member(int(row[0]))
         if member:
             aktif_kullanicilar.append(f"• {member.mention} (`{member.name}`)")
 
@@ -274,28 +303,30 @@ async def status(ctx):
     embed.add_field(name="💻 Bot RAM Kullanımı", value=f"`{ram_usage:.2f} MB`", inline=True)
     embed.add_field(name="⚙️ Bot CPU Kullanımı", value=f"`%{cpu_usage}`", inline=True)
     embed.add_field(name="🖥️ Toplam Sunucu RAM", value=f"`%{system_ram.percent}` dolu ({system_ram.used // (1024*1024)}MB / {system_ram.total // (1024*1024)}MB)", inline=False)
-    embed.set_footer(text="Railway / Sunucu Altyapısı")
+    embed.set_footer(text="Railway / PostgreSQL Altyapısı")
     
     await ctx.send(embed=embed)
     await ctx.message.delete()
 
 @tasks.loop(seconds=55)
 async def vr_status_loop():
-    db = load_db()
-    if not db:
-        return
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT discord_id, access_token FROM vr_users")
+    rows = cur.fetchall()
     
     guild = bot.get_guild(GUILD_ID)
     if not guild:
+        cur.close()
+        conn.close()
         return
 
-    updated = False
-    for discord_id, user_data in list(db.items()):
+    silinecekler = []
+    for discord_id, access_token in rows:
         member = guild.get_member(int(discord_id))
         
         if not member or not any(role.id == BOOST_ROLE_ID for role in member.roles):
-            del db[discord_id]
-            updated = True
+            silinecekler.append(discord_id)
             add_log("SILINME", f"Kullanıcı sunucudan çıktı veya boost'u bitti, veritabanından silindi: {discord_id}")
             continue
 
@@ -313,19 +344,22 @@ async def vr_status_loop():
                 "https://discord.com/api/v10/users/@me/headless-sessions",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {user_data['access_token']}"
+                    "Authorization": f"Bearer {access_token}"
                 },
                 json={"activities": [activity]},
                 timeout=10
             )
             if response.status_code == 401:
-                del db[discord_id]
-                updated = True
+                silinecekler.append(discord_id)
                 add_log("TOKEN_GECERSIZ", f"Token süresi dolmuş, kullanıcı silindi: {discord_id}")
         except Exception as e:
             pass
 
-    if updated:
-        save_db(db)
+    if silinecekler:
+        cur.executemany("DELETE FROM vr_users WHERE discord_id = %s", [(uid,) for uid in silinecekler])
+        conn.commit()
+
+    cur.close()
+    conn.close()
 
 bot.run(BOT_TOKEN)

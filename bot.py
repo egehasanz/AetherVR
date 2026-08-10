@@ -1,58 +1,44 @@
-import discord
-from discord.ext import commands, tasks
 import json
-import os
+import time
 import requests
 import hashlib
 import base64
-import random
+import os
+import sys
+import ctypes
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
-import psutil
-import psycopg2
-from urllib.parse import urlparse
+import discord
+from discord.ext import commands
+import asyncio
 
-# --- AYARLAR ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+CONFIG_FILE = "vr_users.json"
+LOG_FILE = "bot_log.json"
 CLIENT_ID = "1417273808645259344"
-GUILD_ID = 1515086899872796822
-BOOST_ROLE_ID = 1536136751565906013
-LOG_FILE = "log.json"
 
-# --- POSTGRESQL VERİTABANI BAĞLANTISI ---
-def get_db_connection():
-    parsed_url = urlparse(DATABASE_URL)
-    conn = psycopg2.connect(
-        database=parsed_url.path[1:],
-        user=parsed_url.username,
-        password=parsed_url.password,
-        host=parsed_url.hostname,
-        port=parsed_url.port
-    )
-    return conn
+# Railway Environment Variables (Variables) üzerinden tokeni güvenle çeker
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS vr_users (
-            discord_id TEXT PRIMARY KEY,
-            access_token TEXT,
-            refresh_token TEXT
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+REQUIRED_ROLE_ID = 1536136751565906013
 
-# --- ÖZEL VR DURUM SEÇENEKLERİ ---
-VR_ACTIVITIES = [
-    "discord.gg/allahinaslanlari"
-]
+# Botun açılış zamanını kaydetmek için
+START_TIME = time.time()
 
-# --- LOG FONKSİYONU ---
-def add_log(event_type, message):
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+def ekrani_gizle():
+    """Siyah konsol ekranini gorunmez yapar (Windows tabanlı çalışmalarda)"""
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+def log_yaz(mesaj, user_id=None):
+    """Sistem olaylarini log.json dosyasına kaydeder"""
     logs = []
     if os.path.exists(LOG_FILE):
         try:
@@ -63,25 +49,29 @@ def add_log(event_type, message):
     
     log_entry = {
         "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "tur": event_type,
-        "detay": message
+        "user_id": str(user_id) if user_id else "Sistem",
+        "mesaj": mesaj
     }
-    
     logs.append(log_entry)
-    if len(logs) > 500:
-        logs = logs[-500:]
-        
+    
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.message_content = True
+def load_db():
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=4, ensure_ascii=False)
+    
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except:
+            return {}
 
-bot = commands.Bot(command_prefix=".", intents=intents)
+def save_db(data):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
-# PKCE Üretici
 def generate_pkce():
     code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b'=').decode('utf-8')
     code_challenge = base64.urlsafe_b64encode(
@@ -89,277 +79,281 @@ def generate_pkce():
     ).rstrip(b'=').decode('utf-8')
     return code_verifier, code_challenge
 
-VERIFIER_STORE = {}
-
-class VRModal(discord.ui.Modal, title="Meta / Oculus Bağlantısı"):
-    url_input = discord.ui.TextInput(
-        label="Oculus Yönlendirme Linki",
-        placeholder="https://www.oculus.com/oauth_account_linking/login_redirect?code=...",
-        style=discord.TextStyle.long
-    )
-
-    def __init__(self, code_verifier):
-        super().__init__()
-        self.code_verifier = code_verifier
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        redirected_url = self.url_input.value.strip()
-
-        try:
-            parsed = urlparse(redirected_url)
-            code = parse_qs(parsed.query).get('code', [None])[0]
-            if not code:
-                raise ValueError()
-        except:
-            add_log("HATA", f"Kullanıcı hatalı link girdi: {interaction.user} ({interaction.user.id})")
-            await interaction.followup.send("❌ Hatalı link girdin, lütfen oculus.com ile başlayan tam adresi yapıştır.", ephemeral=True)
-            return
-
-        data = {
-            "client_id": CLIENT_ID,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": "https://oculus.com/oauth_account_linking/login_redirect",
-            "code_verifier": self.code_verifier,
-        }
-        
-        response = requests.post("https://discord.com/api/v10/oauth2/token", data=data)
-        
-        if response.status_code == 200:
-            token_data = response.json()
-            access_token = token_data["access_token"]
-            refresh_token = token_data.get("refresh_token", "")
-            
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO vr_users (discord_id, access_token, refresh_token)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (discord_id) 
-                DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token
-            """, (str(interaction.user.id), access_token, refresh_token))
-            conn.commit()
-            cur.close()
-            conn.close()
-            
-            add_log("BASARILI", f"Kullanıcı VR hesabını bağladı: {interaction.user} ({interaction.user.id})")
-            await interaction.followup.send("✅ **İşlem Başarılı!** VR durumun profilinde aktif edildi.", ephemeral=True)
-        else:
-            add_log("API_HATA", f"Discord/Meta token alınamadı. Kod: {response.status_code}, Yanıt: {response.text}, Kullanıcı: {interaction.user}")
-            await interaction.followup.send(f"❌ Discord/Meta tarafında yetki alınamadı (Kod: {response.status_code}). Linkin süresi dolmuş olabilir.", ephemeral=True)
-
-class VRView(discord.ui.View):
-    def __init__(self):
+class VRControlView(discord.ui.View):
+    def __init__(self, user_id):
         super().__init__(timeout=None)
+        self.user_id = user_id
 
-    @discord.ui.button(label="🔗 VR Hesabını Bağla", style=discord.ButtonStyle.green, custom_id="vr_pg_baglan_btn")
-    async def baglan_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = bot.get_guild(GUILD_ID)
-        member = guild.get_member(interaction.user.id)
-        
-        if not member or not any(role.id == BOOST_ROLE_ID for role in member.roles):
-            await interaction.response.send_message("❌ Bu sistemi kullanabilmek için sunucumuza **Boost** basmış olman gerekiyor!", ephemeral=True)
+    @discord.ui.button(label="🥽 VR Bağlan / Güncelle", style=discord.ButtonStyle.success, custom_id="btn_vr_baglan")
+    async def vr_baglan_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Bu buton sadece komutu yazan kullanıcıya özeldir!", ephemeral=True)
             return
 
         code_verifier, code_challenge = generate_pkce()
-        VERIFIER_STORE[interaction.user.id] = code_verifier
-
+        
         auth_url = (
             f"https://discord.com/oauth2/authorize"
             f"?client_id={CLIENT_ID}"
             f"&redirect_uri=https://oculus.com/oauth_account_linking/login_redirect"
             f"&response_type=code"
-            f"&scope=identify"
+            f"&scope=identify%20activities.read%20activities.write"
             f"&code_challenge={code_challenge}"
             f"&code_challenge_method=S256"
         )
 
         embed = discord.Embed(
-            title="🥽 Meta Quest Entegrasyon Adımları",
-            description="Profilinde **Meta Quest** durumunu aktif etmek için aşağıdaki 3 basit adımı takip et:",
-            color=discord.Color.from_rgb(88, 101, 242)
+            title="🥽 Meta Quest VR Yetkilendirme",
+            description=(
+                "1. Aşağıdaki **'Yetki Ver'** butonuna tıklayarak Discord hesabınla giriş yap.\n"
+                "2. Karşına çıkacak (açılmayacak veya hata verecek olan oculus.com uzantılı) **tarayıcı adres çubuğundaki tüm URL'yi** kopyala.\n"
+                "3. Kopyaladığın linki **buraya (özel mesaja) gönder**.\n\n"
+                "⚠️ *Not: Bağlantı kurulduktan sonra durumun Discord'a yansıması 10-30 saniye sürebilir. Ayrıca bu durum genellikle **kendinizde görünmez**, ancak diğer kullanıcılar profilinizde görebilir.*"
+            ),
+            color=discord.Color.blue()
         )
-        embed.add_field(
-            name="1️⃣ Yetkilendirme Sayfasına Git",
-            value="Aşağıdaki **🌐 Meta ile Giriş Yap** butonuna tıklayarak tarayıcından onay ver.",
-            inline=False
-        )
-        embed.add_field(
-            name="2️⃣ Yönlendirme Linkini Kopyala",
-            value="Giriş yaptıktan sonra yönlendirildiğin sayfanın adres çubuğundaki (`https://oculus.com/...`) adresi **tam olarak** kopyala.",
-            inline=False
-        )
-        embed.add_field(
-            name="3️⃣ Linki Sisteme İlet",
-            value="**📝 Kopyaladığım Linki Gir** butonuna tıklayıp açılan kutucuğa kopyaladığın adresi yapıştır.",
-            inline=False
-        )
-        embed.set_footer(text="🔒 Güvenli PostgreSQL Altyapısı • Verileriniz güvende.")
+        
+        view_link = discord.ui.View()
+        view_link.add_item(discord.ui.Button(label="🔗 Yetki Ver", url=auth_url, style=discord.ButtonStyle.link))
 
-        class ActionView(discord.ui.View):
-            def __init__(self):
-                super().__init__(timeout=180)
-                self.add_item(discord.ui.Button(label="🌐 Meta ile Giriş Yap", style=discord.ButtonStyle.link, url=auth_url))
+        await interaction.response.send_message(embed=embed, view=view_link, ephemeral=True)
+        log_yaz("Kullanıcıya buton üzerinden OAuth yönergeleri gönderildi.", interaction.user.id)
 
-            @discord.ui.button(label="📝 Kopyaladığım Linki Gir", style=discord.ButtonStyle.primary, custom_id="vr_pg_modal_btn")
-            async def open_modal(self, inner_interaction: discord.Interaction, inner_button: discord.ui.Button):
-                await inner_interaction.response.send_modal(VRModal(VERIFIER_STORE[inner_interaction.user.id]))
+        def check(m):
+            return m.author == interaction.user and isinstance(m.channel, discord.DMChannel) and "code=" in m.content
 
-        await interaction.response.send_message(embed=embed, view=ActionView(), ephemeral=True)
+        try:
+            dm_channel = await interaction.user.create_dm()
+            await dm_channel.send("📥 Kopyaladığın OAuth adresini buraya yapıştırıp gönder:")
+            
+            msg = await bot.wait_for('message', timeout=120.0, check=check)
+            redirected_url = msg.content.strip()
 
-    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.red, custom_id="vr_pg_kopar_btn")
-    async def kopar_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM vr_users WHERE discord_id = %s", (str(interaction.user.id),))
-        deleted = cur.rowcount
-        conn.commit()
-        cur.close()
-        conn.close()
+            parsed = urlparse(redirected_url)
+            code = parse_qs(parsed.query).get('code', [None])[0]
+            if not code:
+                raise ValueError()
 
-        if deleted > 0:
-            add_log("KOPARMA", f"Kullanıcı VR bağlantısını kesti: {interaction.user} ({interaction.user.id})")
-            await interaction.response.send_message("🔌 VR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
+            data = {
+                "client_id": CLIENT_ID,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://oculus.com/oauth_account_linking/login_redirect",
+                "code_verifier": code_verifier,
+            }
+            
+            response = requests.post("https://discord.com/api/v10/oauth2/token", data=data)
+            
+            if response.status_code == 200:
+                token_data = response.json()
+                db = load_db()
+                
+                db[str(interaction.user.id)] = {
+                    "access_token": token_data["access_token"],
+                    "refresh_token": token_data.get("refresh_token", ""),
+                    "status_name": "~~",
+                    "session_token": None
+                }
+                save_db(db)
+                
+                success_embed = discord.Embed(
+                    title="🎉 İşlem Başarılı!",
+                    description=(
+                        "Meta Quest VR durumun hesabına başarıyla bağlandı!\n\n"
+                        "⏳ **10-30 saniye içinde** aktif olacaktır.\n"
+                        "⚠️ *Bilgilendirme: Bu durum genellikle **kendinizde görünmez**, başkaları profilinize baktığında görebilir.*"
+                    ),
+                    color=discord.Color.green()
+                )
+                await dm_channel.send(embed=success_embed)
+                log_yaz("Kullanıcı başarıyla bağlandı ve veritabanına kaydedildi.", interaction.user.id)
+            else:
+                await dm_channel.send("❌ Token alınamadı, işlem başarısız oldu. Lütfen tekrar dene.")
+                log_yaz(f"Token alma hatası HTTP Kod: {response.status_code}", interaction.user.id)
+
+        except Exception as e:
+            try:
+                await interaction.user.send("⏱️ Süre aşımı yaşandı veya bağlantı adresi hatalı formatta girildi.")
+            except:
+                pass
+            log_yaz(f"Süre aşımı veya hata: {str(e)}", interaction.user.id)
+
+    @discord.ui.button(label="🔌 Bağlantıyı Kes", style=discord.ButtonStyle.danger, custom_id="btn_vr_kes")
+    async def vr_kes_btn(self, interaction: discord.Interaction, custom_id: discord.ui.Button = None):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Bu buton sadece komutu yazan kullanıcıya özeldir!", ephemeral=True)
+            return
+
+        db = load_db()
+        user_id = str(interaction.user.id)
+        
+        if user_id in db:
+            del db[user_id]
+            save_db(db)
+            
+            embed = discord.Embed(
+                title="🔌 Bağlantı Kesildi",
+                description="VR durum bağlantın başarıyla sonlandırıldı ve veritabanından silindi.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log_yaz("Kullanıcı buton aracılığıyla bağlantısını kesti.", interaction.user.id)
         else:
-            await interaction.response.send_message("❌ Zaten aktif bir VR bağlantın bulunmuyor.", ephemeral=True)
+            embed = discord.Embed(
+                title="⚠️ Uyarı",
+                description="Sistemde aktif bir VR bağlantın bulunmuyor.",
+                color=discord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
 async def on_ready():
-    init_db()
-    print(f"Bot aktif ve PostgreSQL bağlantısı hazır: {bot.user.name}")
-    add_log("BILGI", f"Bot aktifleşti: {bot.user.name}")
-    bot.add_view(VRView())
-    vr_status_loop.start()
+    print(f"Bot aktif: {bot.user.name}")
+    ekrani_gizle()
+    log_yaz("Bot başarıyla başlatıldı ve aktif hale geldi.")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def kurulumpanel(ctx):
-    embed = discord.Embed(
-        title="🥽 Meta Quest Profil Entegrasyon Merkezi",
-        description=(
-            "Sunucumuza **Boost** basarak profilinde **Meta Quest (VR)** aktivitesini aktif edebilirsin!\n\n"
-            "✨ **Sistem Özellikleri:**\n"
-            "• Profilinde otomatik değişen **Meta Quest** durumları görünür.\n"
-            "• PostgreSQL güvencesiyle verileriniz kalıcı olarak saklanır.\n"
-            "• İstediğin zaman tek tıkla bağlantını kesebilirsin.\n\n"
-            "🚀 **Nasıl Aktif Edilir?**\n"
-            "Aşağıdaki **🔗 VR Hesabını Bağla** butonuna tıklayarak adımları takip etmeniz yeterlidir."
-        ),
-        color=discord.Color.from_rgb(88, 101, 242)
-    )
-    embed.set_footer(text="Meta Quest Entegrasyon Altyapısı • PostgreSQL")
-    await ctx.send(embed=embed, view=VRView())
-    await ctx.message.delete()
-    add_log("PANEL", f"Kurulum paneli oluşturuldu: {ctx.channel.name} ({ctx.author})")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def aktifler(ctx):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT discord_id FROM vr_users")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        await ctx.send("❌ Sunucu bulunamadı.", delete_after=10)
+@bot.command(name="vr")
+async def vr_panel(ctx):
+    user_roles = [role.id for role in ctx.author.roles]
+    if REQUIRED_ROLE_ID not in user_roles:
+        embed = discord.Embed(
+            title="⛔ Erişim Reddedildi",
+            description="Bu komutu kullanmak için gereken özel role sahip değilsin.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
         return
 
-    aktif_kullanicilar = []
-    for row in rows:
-        member = guild.get_member(int(row[0]))
-        if member:
-            aktif_kullanicilar.append(f"• {member.mention} (`{member.name}`)")
-
     embed = discord.Embed(
-        title="🥽 Aktif VR Entegrasyonu Bulunan Kullanıcılar",
+        title="🥽 Meta Quest VR Durum Yönetim Paneli",
+        description="Aşağıdaki butonları kullanarak Meta Quest VR durumunu Discord hesabına bağlayabilir veya mevcut bağlantını sonlandırabilirsin.",
+        color=discord.Color.blurple()
+    )
+    
+    embed.set_footer(text="AetherVR Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
+    
+    view = VRControlView(ctx.author.id)
+    await ctx.send(embed=embed, view=view)
+    log_yaz("Kullanıcı için VR yönetim paneli açıldı.", ctx.author.id)
+
+@bot.command(name="status")
+async def bot_status(ctx):
+    db = load_db()
+    aktif_sayisi = len(db)
+    
+    embed = discord.Embed(
+        title="📊 Sistem Durumu & İstatistikler",
         color=discord.Color.green()
     )
-
-    if aktif_kullanicilar:
-        embed.description = "\n".join(aktif_kullanicilar)
-        embed.set_footer(text=f"Toplam Aktif Kullanıcı: {len(aktif_kullanicilar)}")
-    else:
-        embed.description = "Şu anda sistemde bağlı aktif bir kullanıcı bulunmuyor."
-
+    embed.add_field(name="🥽 Aktif VR Kullanıcıları", value=f"```fix\n{aktif_sayisi} Kullanıcı bağlı\n```", inline=False)
+    embed.add_field(name="🟢 Bot Durumu", value="```yaml\nÇalışıyor (Aktif)\n```", inline=True)
+    embed.set_footer(text="AetherVR Entegrasyon Altyapısı")
     await ctx.send(embed=embed)
-    await ctx.message.delete()
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def status(ctx):
-    process = psutil.Process(os.getpid())
-    ram_usage = process.memory_info().rss / (1024 * 1024)
-    system_ram = psutil.virtual_memory()
-    cpu_usage = process.cpu_percent(interval=0.1)
-
-    embed = discord.Embed(
-        title="📊 Bot Sistem Durumu (Status)",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="💻 Bot RAM Kullanımı", value=f"`{ram_usage:.2f} MB`", inline=True)
-    embed.add_field(name="⚙️ Bot CPU Kullanımı", value=f"`%{cpu_usage}`", inline=True)
-    embed.add_field(name="🖥️ Toplam Sunucu RAM", value=f"`%{system_ram.percent}` dolu ({system_ram.used // (1024*1024)}MB / {system_ram.total // (1024*1024)}MB)", inline=False)
-    embed.set_footer(text="Railway / PostgreSQL Altyapısı")
+@bot.command(name="aktifler")
+async def bot_aktifler(ctx):
+    db = load_db()
     
-    await ctx.send(embed=embed)
-    await ctx.message.delete()
-
-@tasks.loop(seconds=55)
-async def vr_status_loop():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT discord_id, access_token FROM vr_users")
-    rows = cur.fetchall()
-    
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        cur.close()
-        conn.close()
+    if not db:
+        embed = discord.Embed(
+            title="👥 Aktif VR Kullanıcıları",
+            description="Şu anda sistemde bağlı aktif kullanıcı bulunmuyor.",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
         return
 
-    silinecekler = []
-    for discord_id, access_token in rows:
-        member = guild.get_member(int(discord_id))
+    kullanici_listesi = []
+    sayac = 1
+    for user_id in db.keys():
+        user = bot.get_user(int(user_id))
+        if user:
+            kullanici_listesi.append(f"{sayac}. 👤 **{user.name}** (Gizli ID)")
+        else:
+            kullanici_listesi.append(f"{sayac}. 👤 **Gizli Kullanıcı**")
+        sayac += 1
+
+    embed = discord.Embed(
+        title="👥 Aktif VR Kullanıcı Listesi",
+        description="Güvenlik nedeniyle kullanıcı ID'leri gizlenmiştir:\n\n" + "\n".join(kullanici_listesi),
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"Toplam: {len(db)} aktif kullanıcı • AetherVR")
+    await ctx.send(embed=embed)
+
+@bot.command(name="hosting")
+async def bot_hosting(ctx):
+    uptime_seconds = int(time.time() - START_TIME)
+    hours = uptime_seconds // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    seconds = uptime_seconds % 60
+    uptime_str = f"{hours} saat, {minutes} dakika, {seconds} saniye"
+
+    embed = discord.Embed(
+        title="🖥️ Hosting & Sunucu Bilgileri",
+        description="Botun barındırıldığı sistemin anlık teknik detayları:",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="⚙️ İşletim Sistemi", value=f"```ansi\n\u001b[32mCloud / Railway Bulut\n```", inline=True)
+    embed.add_field(name="🐍 Python Sürümü", value=f"```ansi\n\u001b[33m{sys.version.split()[0]}\n```", inline=True)
+    embed.add_field(name="⏱️ Çalışma Süresi (Uptime)", value=f"```ansi\n\u001b[36m{uptime_str}\n```", inline=False)
+    embed.add_field(name="📂 Veritabanı Türü", value="`JSON Tabanlı Yerel Veritabanı`", inline=True)
+    embed.add_field(name="🏓 Gecikme (Latency)", value=f"`{round(bot.latency * 1000)}ms`", inline=True)
+    
+    embed.set_footer(text=f"Talep eden: {ctx.author.name} • AetherVR Hosting", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    await ctx.send(embed=embed)
+
+@bot.event
+async def setup_hook():
+    bot.loop.create_task(background_status_updater())
+
+async def background_status_updater():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        db = load_db()
+        updated = False
         
-        if not member or not any(role.id == BOOST_ROLE_ID for role in member.roles):
-            silinecekler.append(discord_id)
-            add_log("SILINME", f"Kullanıcı sunucudan çıktı veya boost'u bitti, veritabanından silindi: {discord_id}")
-            continue
+        for user_id, user_data in list(db.items()):
+            token = user_data.get("access_token", "").strip()
+            session_token = user_data.get("session_token")
+            
+            if not token:
+                continue
+                
+            activity = {
+                "application_id": CLIENT_ID,
+                "name": user_data.get("status_name", "~~"),
+                "type": 6,
+                "platform": "meta_quest"
+            }
+            try:
+                response = requests.post(
+                    "https://discord.com/api/v10/users/@me/headless-sessions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    },
+                    json={"activities": [activity], "token": session_token},
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    new_session = response.json().get("token")
+                    if new_session != session_token:
+                        db[user_id]["session_token"] = new_session
+                        updated = True
+                elif response.status_code == 401:
+                    del db[user_id]
+                    updated = True
+                    log_yaz("Geçersiz token tespit edildi, veritabanından kaldırıldı.", user_id)
+            except:
+                pass
+                
+        if updated:
+            save_db(db)
+            
+        await asyncio.sleep(55)
 
-        chosen_activity_name = random.choice(VR_ACTIVITIES)
-
-        activity = {
-            "application_id": CLIENT_ID,
-            "name": chosen_activity_name,
-            "type": 0,
-            "platform": "meta_quest"
-        }
-
-        try:
-            response = requests.post(
-                "https://discord.com/api/v10/users/@me/headless-sessions",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}"
-                },
-                json={"activities": [activity]},
-                timeout=10
-            )
-            if response.status_code == 401:
-                silinecekler.append(discord_id)
-                add_log("TOKEN_GECERSIZ", f"Token süresi dolmuş, kullanıcı silindi: {discord_id}")
-        except Exception as e:
-            pass
-
-    if silinecekler:
-        cur.executemany("DELETE FROM vr_users WHERE discord_id = %s", [(uid,) for uid in silinecekler])
-        conn.commit()
-
-    cur.close()
-    conn.close()
-
-bot.run(BOT_TOKEN)
+if BOT_TOKEN:
+    bot.run(BOT_TOKEN)
+else:
+    print("HATA: BOT_TOKEN çevresel değişkeni (Environment Variable) bulunamadı!")

@@ -5,10 +5,10 @@ import os
 import requests
 import hashlib
 import base64
-import random
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import psutil
+import time
 
 # --- AYARLAR ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -17,14 +17,6 @@ GUILD_ID = 1515086899872796822
 BOOST_ROLE_ID = 1536136751565906013
 DB_FILE = "veritabani.json"
 LOG_FILE = "log.json"
-
-# --- ÖZEL VR DURUM SEÇENEKLERİ ---
-VR_ACTIVITIES = [
-    "Meta Quest VR ile oynuyor",
-    "Quest OS Ana Menüde",
-    "VRChat dünyalarını geziyor",
-    "https://discord.gg/allahinaslanlari"
-]
 
 # --- LOG FONKSİYONU ---
 def add_log(event_type, message):
@@ -80,7 +72,7 @@ def generate_pkce():
 
 VERIFIER_STORE = {}
 
-class VRModal(discord.ui.Modal, title="Meta / Oculus Bağlantısı"):
+class VRModal(discord.ui.Modal, title="AetherVR Entegrasyonu"):
     url_input = discord.ui.TextInput(
         label="Oculus Yönlendirme Linki",
         placeholder="https://www.oculus.com/oauth_account_linking/login_redirect?code=...",
@@ -121,14 +113,17 @@ class VRModal(discord.ui.Modal, title="Meta / Oculus Bağlantısı"):
             refresh_token = token_data.get("refresh_token", "")
             
             db = load_db()
+            start_timestamp = int(time.time())
+            
             db[str(interaction.user.id)] = {
                 "access_token": access_token,
-                "refresh_token": refresh_token
+                "refresh_token": refresh_token,
+                "start_time": start_timestamp
             }
             save_db(db)
             
             add_log("BASARILI", f"Kullanıcı VR hesabını bağladı: {interaction.user} ({interaction.user.id})")
-            await interaction.followup.send("✅ **İşlem Başarılı!** VR durumun profilinde aktif edildi.", ephemeral=True)
+            await interaction.followup.send("✅ **İşlem Başarılı!** AetherVR durumun profilinde aktif edildi.", ephemeral=True)
         else:
             add_log("API_HATA", f"Discord/Meta token alınamadı. Kod: {response.status_code}, Kullanıcı: {interaction.user}")
             await interaction.followup.send("❌ Discord/Meta tarafında yetki alınamadı. Linkin süresi dolmuş olabilir, tekrar dene.", ephemeral=True)
@@ -160,8 +155,8 @@ class VRView(discord.ui.View):
         )
 
         embed = discord.Embed(
-            title="🥽 Meta Quest Entegrasyon Adımları",
-            description="Profilinde **Meta Quest** durumunu aktif etmek için aşağıdaki 3 basit adımı takip et:",
+            title="🥽 AetherVR Entegrasyon Adımları",
+            description="Profilinde özel **AetherVR** durumunu aktif etmek için aşağıdaki 3 basit adımı takip et:",
             color=discord.Color.from_rgb(88, 101, 242)
         )
         embed.add_field(
@@ -200,9 +195,9 @@ class VRView(discord.ui.View):
             del db[user_id_str]
             save_db(db)
             add_log("KOPARMA", f"Kullanıcı VR bağlantısını kesti: {interaction.user} ({interaction.user.id})")
-            await interaction.response.send_message("🔌 VR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
+            await interaction.response.send_message("🔌 AetherVR entegrasyonu hesabından kaldırıldı.", ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Zaten aktif bir VR bağlantın bulunmuyor.", ephemeral=True)
+            await interaction.response.send_message("❌ Zaten aktif bir bağlantın bulunmuyor.", ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -215,19 +210,19 @@ async def on_ready():
 @commands.has_permissions(administrator=True)
 async def kurulumpanel(ctx):
     embed = discord.Embed(
-        title="🥽 Meta Quest Profil Entegrasyon Merkezi",
+        title="🥽 AetherVR Profil Entegrasyon Merkezi",
         description=(
-            "Sunucumuza **Boost** basarak profilinde **Meta Quest (VR)** aktivitesini aktif edebilirsin!\n\n"
+            "Sunucumuza **Boost** basarak profilinde özel **AetherVR** aktivitesini aktif edebilirsin!\n\n"
             "✨ **Sistem Özellikleri:**\n"
-            "• Profilinde otomatik değişen **Meta Quest** durumları görünür.\n"
-            "• Hesabın kesintisiz olarak 7/24 arka planda güncellenir.\n"
+            "• Profilinde özel bot logolu durumun görünür.\n"
+            "• Süre asla sıfırlanmaz, aksine kesintisiz saymaya devam eder.\n"
             "• İstediğin zaman tek tıkla bağlantını kesebilirsin.\n\n"
             "🚀 **Nasıl Aktif Edilir?**\n"
             "Aşağıdaki **🔗 VR Hesabını Bağla** butonuna tıklayarak adımları takip etmeniz yeterlidir."
         ),
         color=discord.Color.from_rgb(88, 101, 242)
     )
-    embed.set_footer(text="Meta Quest Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
+    embed.set_footer(text="AetherVR Entegrasyon Altyapısı • Server Boost Özel Ayrıcalığı")
     await ctx.send(embed=embed, view=VRView())
     await ctx.message.delete()
     add_log("PANEL", f"Kurulum paneli oluşturuldu: {ctx.channel.name} ({ctx.author})")
@@ -249,7 +244,7 @@ async def aktifler(ctx):
             aktif_kullanicilar.append(f"• {member.mention} (`{member.name}`)")
 
     embed = discord.Embed(
-        title="🥽 Aktif VR Entegrasyonu Bulunan Kullanıcılar",
+        title="🥽 Aktif AetherVR Entegrasyonu Bulunan Kullanıcılar",
         color=discord.Color.green()
     )
 
@@ -302,13 +297,19 @@ async def vr_status_loop():
             add_log("SILINME", f"Kullanıcı sunucudan çıktı veya boost'u bitti, veritabanından silindi: {discord_id}")
             continue
 
-        chosen_activity_name = random.choice(VR_ACTIVITIES)
+        # Eğer kullanıcının daha önceden kayıtlı bir başlangıç zamanı yoksa bugünkü anı ekle
+        start_time = user_data.get("start_time", int(time.time()))
 
+        # Aktiviteyi Sabitliyoruz
         activity = {
             "application_id": CLIENT_ID,
-            "name": chosen_activity_name,
+            "name": "discord.gg/allahinaslanlari",
             "type": 0,
-            "platform": "meta_quest"
+            "timestamps": {
+                "start": start_time
+            },
+            # Artık platform: "meta_quest" yok, bu sayede logoyu Developer Portal'daki belirler.
+            # Eğer yine de Meta logosu çıkarsa, Client ID'yi değiştirip yeni bir uygulama açman gerekir.
         }
 
         try:

@@ -48,7 +48,7 @@ def init_db():
 
 # --- ÖZEL VR DURUM SEÇENEKLERİ ---
 VR_ACTIVITIES = [
-    "https://discord.gg/allahinaslanlari"
+    "discord.gg/allahinaslanlari"
 ]
 
 # --- LOG FONKSİYONU ---

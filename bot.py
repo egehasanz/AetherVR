@@ -13,6 +13,7 @@ from discord.ext import commands
 import asyncio
 
 CONFIG_FILE = "vr_users.json"
+APPROVED_FILE = "approved_users.json"
 LOG_FILE = "bot_log.json"
 CLIENT_ID = "1417273808645259344"
 
@@ -57,19 +58,19 @@ def log_yaz(mesaj, user_id=None):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-def load_db():
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+def load_db(file_path):
+    if not os.path.exists(file_path):
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump({}, f, indent=4, ensure_ascii=False)
     
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except:
             return {}
 
-def save_db(data):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+def save_db(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 def generate_pkce():
@@ -90,20 +91,14 @@ class OwnerApprovalView(discord.ui.View):
             await interaction.response.send_message("Bu buton yalnızca sistem sahibine özeldir.", ephemeral=True)
             return
 
-        guild = bot.get_guild(GUILD_ID)
-        if guild:
-            member = guild.get_member(self.target_user_id)
-            if member:
-                role = guild.get_role(REQUIRED_ROLE_ID)
-                if role:
-                    try:
-                        await member.add_roles(role, reason="Bot sahibi tarafından VR kullanım izni onaylandı.")
-                    except Exception as e:
-                        print(f"Rol verme hatası: {e}")
+        # Kullanıcıyı onaylı listeye ekle
+        approved_db = load_db(APPROVED_FILE)
+        approved_db[str(self.target_user_id)] = {"approved": True}
+        save_db(APPROVED_FILE, approved_db)
 
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="✅ Bu talep onaylandı ve kullanıcıya rolü verildi.", view=self)
+        await interaction.response.edit_message(content="✅ Bu talep onaylandı ve kullanıcıya bot kullanım izni verildi.", view=self)
 
         try:
             target_user = await bot.fetch_user(self.target_user_id)
@@ -137,7 +132,13 @@ class VRControlView(discord.ui.View):
     async def vr_baglan_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_roles = [role.id for role in interaction.user.roles]
         if REQUIRED_ROLE_ID not in user_roles:
-            await interaction.response.send_message("Erişim reddedildi. Talebiniz henüz sistem yöneticisi tarafından inceleniyor veya onaylanmadı.", ephemeral=True)
+            await interaction.response.send_message("Erişim reddedildi. Bu işlemi gerçekleştirmek için gerekli yetki seviyesine sahip değilsiniz.", ephemeral=True)
+            return
+
+        # Owner onay kontrolü ekleniyor
+        approved_db = load_db(APPROVED_FILE)
+        if str(interaction.user.id) not in approved_db:
+            await interaction.response.send_message("Erişim reddedildi. Rolünüz olmasına rağmen sistem yöneticisi tarafından henüz bot kullanım izni onaylanmadı.", ephemeral=True)
             return
 
         code_verifier, code_challenge = generate_pkce()
@@ -196,7 +197,7 @@ class VRControlView(discord.ui.View):
             
             if response.status_code == 200:
                 token_data = response.json()
-                db = load_db()
+                db = load_db(CONFIG_FILE)
                 
                 db[str(interaction.user.id)] = {
                     "access_token": token_data["access_token"],
@@ -204,7 +205,7 @@ class VRControlView(discord.ui.View):
                     "status_name": "~~",
                     "session_token": None
                 }
-                save_db(db)
+                save_db(CONFIG_FILE, db)
                 
                 success_embed = discord.Embed(
                     title="İşlem Başarılı",
@@ -234,12 +235,12 @@ class VRControlView(discord.ui.View):
             await interaction.response.send_message("Erişim reddedildi. Bu işlemi gerçekleştirmek için gerekli yetki seviyesine sahip değilsiniz.", ephemeral=True)
             return
 
-        db = load_db()
+        db = load_db(CONFIG_FILE)
         user_id = str(interaction.user.id)
         
         if user_id in db:
             del db[user_id]
-            save_db(db)
+            save_db(CONFIG_FILE, db)
             
             embed = discord.Embed(
                 title="Bağlantı Sonlandırıldı",
@@ -287,7 +288,6 @@ async def on_member_update(before: discord.member.Member, after: discord.member.
                 await owner.send(embed=embed, view=view)
                 log_yaz(f"Kullanıcı rol aldı, sahibine onay paneli gönderildi.", after.id)
             
-            # Kullanıcıya beklemede olduğunu bildiren mesaj
             await after.send("VIP Booster rolü tespit edildi. AetherVR kullanım onayınız şu anda sistem yöneticisi tarafından incelenmektedir, lütfen bekleyin.")
         except Exception as e:
             log_yaz(f"Rol güncelleme bildirim hatası: {str(e)}", after.id)
@@ -298,7 +298,7 @@ async def vr_panel(ctx):
     if REQUIRED_ROLE_ID not in user_roles:
         embed = discord.Embed(
             title="Erişim Reddedildi",
-            description="Talebiniz henüz sistem yöneticisi tarafından inceleniyor veya onaylanmadı.",
+            description="Bu komutu kullanmak için yetkili role sahip değilsiniz.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -318,7 +318,7 @@ async def vr_panel(ctx):
 
 @bot.command(name="status")
 async def bot_status(ctx):
-    db = load_db()
+    db = load_db(CONFIG_FILE)
     aktif_sayisi = len(db)
     
     embed = discord.Embed(
@@ -332,7 +332,7 @@ async def bot_status(ctx):
 
 @bot.command(name="aktifler")
 async def bot_aktifler(ctx):
-    db = load_db()
+    db = load_db(CONFIG_FILE)
     
     if not db:
         embed = discord.Embed(
@@ -392,7 +392,7 @@ async def background_status_updater():
     guild = bot.get_guild(GUILD_ID)
     
     while not bot.is_closed():
-        db = load_db()
+        db = load_db(CONFIG_FILE)
         updated = False
         
         if not guild:
@@ -443,7 +443,7 @@ async def background_status_updater():
                 pass
                 
         if updated:
-            save_db(db)
+            save_db(CONFIG_FILE, db)
             
         await asyncio.sleep(55)
 

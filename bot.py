@@ -21,6 +21,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 REQUIRED_ROLE_ID = 1536136751565906013
 GUILD_ID = 1515086899872796822  # Sunucu ID'niz tanımlandı
+OWNER_ID = 1507395734163689583   # Bot Sahibi ID'si tanımlandı
 
 START_TIME = time.time()
 
@@ -78,6 +79,56 @@ def generate_pkce():
     ).rstrip(b'=').decode('utf-8')
     return code_verifier, code_challenge
 
+class OwnerApprovalView(discord.ui.View):
+    def __init__(self, target_user_id: int):
+        super().__init__(timeout=None)
+        self.target_user_id = target_user_id
+
+    @discord.ui.button(label="İzin Ver", style=discord.ButtonStyle.success, custom_id="owner_approve_btn")
+    async def approve_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("Bu buton yalnızca sistem sahibine özeldir.", ephemeral=True)
+            return
+
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            member = guild.get_member(self.target_user_id)
+            if member:
+                role = guild.get_role(REQUIRED_ROLE_ID)
+                if role:
+                    try:
+                        await member.add_roles(role, reason="Bot sahibi tarafından VR kullanım izni onaylandı.")
+                    except Exception as e:
+                        print(f"Rol verme hatası: {e}")
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="✅ Bu talep onaylandı ve kullanıcıya rolü verildi.", view=self)
+
+        try:
+            target_user = await bot.fetch_user(self.target_user_id)
+            if target_user:
+                await target_user.send("AetherVR botunu kullanmaya uygun görüldünüz. Artık komutları ve paneli kullanabilirsiniz.")
+        except:
+            pass
+
+    @discord.ui.button(label="Reddet", style=discord.ButtonStyle.danger, custom_id="owner_reject_btn")
+    async def reject_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("Bu buton yalnızca sistem sahibine özeldir.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Bu talep reddedildi.", view=self)
+
+        try:
+            target_user = await bot.fetch_user(self.target_user_id)
+            if target_user:
+                await target_user.send("AetherVR adlı botu kullanmaya uygun görülmediniz.")
+        except:
+            pass
+
 class VRControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -86,7 +137,7 @@ class VRControlView(discord.ui.View):
     async def vr_baglan_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_roles = [role.id for role in interaction.user.roles]
         if REQUIRED_ROLE_ID not in user_roles:
-            await interaction.response.send_message("Erişim reddedildi. Bu işlemi gerçekleştirmek için gerekli yetki seviyesine sahip değilsiniz.", ephemeral=True)
+            await interaction.response.send_message("Erişim reddedildi. Talebiniz henüz sistem yöneticisi tarafından inceleniyor veya onaylanmadı.", ephemeral=True)
             return
 
         code_verifier, code_challenge = generate_pkce()
@@ -212,13 +263,42 @@ async def on_ready():
     bot.add_view(VRControlView())
     log_yaz("Sistem başlatıldı.")
 
+@bot.event
+async def on_member_update(before: discord.member.Member, after: discord.member.Member):
+    if after.guild.id != GUILD_ID:
+        return
+    
+    before_roles = {role.id for role in before.roles}
+    after_roles = {role.id for role in after.roles}
+    
+    if REQUIRED_ROLE_ID not in before_roles and REQUIRED_ROLE_ID in after_roles:
+        try:
+            owner = await bot.fetch_user(OWNER_ID)
+            if owner:
+                embed = discord.Embed(
+                    title="Yeni VIP Booster / Rol Talebi",
+                    description=(
+                        f"**{after}** (`{after.id}`) kullanıcı adlı üye **@Vip Booster** rolünü aldı.\n\n"
+                        "Bot kullanımına izin verilsin mi?"
+                    ),
+                    color=discord.Color.gold()
+                )
+                view = OwnerApprovalView(target_user_id=after.id)
+                await owner.send(embed=embed, view=view)
+                log_yaz(f"Kullanıcı rol aldı, sahibine onay paneli gönderildi.", after.id)
+            
+            # Kullanıcıya beklemede olduğunu bildiren mesaj
+            await after.send("VIP Booster rolü tespit edildi. AetherVR kullanım onayınız şu anda sistem yöneticisi tarafından incelenmektedir, lütfen bekleyin.")
+        except Exception as e:
+            log_yaz(f"Rol güncelleme bildirim hatası: {str(e)}", after.id)
+
 @bot.command(name="vr")
 async def vr_panel(ctx):
     user_roles = [role.id for role in ctx.author.roles]
     if REQUIRED_ROLE_ID not in user_roles:
         embed = discord.Embed(
             title="Erişim Reddedildi",
-            description="Bu komutu kullanmak için yetkili role sahip değilsiniz.",
+            description="Talebiniz henüz sistem yöneticisi tarafından inceleniyor veya onaylanmadı.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
